@@ -1,170 +1,155 @@
-from flask import Flask, request
 import requests
-from telegram import Update, ReplyKeyboardMarkup
+from bs4 import BeautifulSoup
+import threading
+import os
+
+from flask import Flask
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "YOUR_BOT_TOKEN"
+# ===== TOKEN (Render ENV থেকে নিবে) =====
+TOKEN = os.getenv("TOKEN")
 
-app = Flask(__name__)
+BASE_URL = "https://hscresult.bise-ctg.gov.bd/h_x_y_ctg25/individual/result_mark_details.php"
 
-# ================= BOT =================
-application = ApplicationBuilder().token(TOKEN).build()
+# ===== FLASK KEEP ALIVE =====
+app_flask = Flask(__name__)
 
-users = {}
+@app_flask.route('/')
+def home():
+    return "Bot is running!"
 
-# ================= MENU =================
-def main_menu():
-    return ReplyKeyboardMarkup([
-        ["🚀 রেজাল্ট বের করুন 🚀"]
-    ], resize_keyboard=True)
+def run_flask():
+    app_flask.run(host="0.0.0.0", port=8080)
 
-# ================= START =================
+def keep_alive():
+    t = threading.Thread(target=run_flask)
+    t.start()
+
+# ===== START =====
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users[update.effective_chat.id] = {}
+    keyboard = [["🚀 Start"]]
+
     await update.message.reply_text(
-        "🎉 Welcome!\n\nResult দেখতে নিচের বাটনে চাপ দিন 👇",
-        reply_markup=main_menu()
-    )
-
-# ================= HANDLE =================
-async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    text = update.message.text
-
-    if chat_id not in users:
-        users[chat_id] = {}
-
-    data = users[chat_id]
-
-    # MAIN BUTTON
-    if text == "🚀 রেজাল্ট বের করুন 🚀":
-        users[chat_id] = {}
-        keyboard = [["SSC", "HSC"]]
-        await update.message.reply_text("📘 Exam নির্বাচন করুন:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        return
-
-    # EXAM
-    if "exam" not in data:
-        data["exam"] = text.lower()
-        await update.message.reply_text("📅 Year লিখুন (e.g. 2020):")
-        return
-
-    # YEAR
-    if "year" not in data:
-        data["year"] = text
-        await update.message.reply_text("🏫 Board লিখুন (e.g. dhaka):")
-        return
-
-    # BOARD
-    if "board" not in data:
-        data["board"] = text.lower()
-        await update.message.reply_text("🆔 Roll লিখুন:")
-        return
-
-    # ROLL
-    if "roll" not in data:
-        data["roll"] = text
-        await update.message.reply_text("📄 Registration লিখুন:")
-        return
-
-    # REG
-    if "reg" not in data:
-        data["reg"] = text
-
-        session = requests.Session()
-        data["session"] = session
-
-        await send_captcha(update, data)
-        return
-
-    # CAPTCHA RELOAD
-    if text == "🔄 Reload Captcha":
-        await send_captcha(update, data)
-        return
-
-    # CAPTCHA SUBMIT
-    if "captcha" not in data:
-        data["captcha"] = text
-
-        payload = {
-            "board": data["board"],
-            "exam": data["exam"],
-            "year": data["year"],
-            "result_type": "1",
-            "roll": data["roll"],
-            "reg": data["reg"],
-            "captcha": data["captcha"]
-        }
-
-        headers = {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "X-Requested-With": "XMLHttpRequest",
-            "Origin": "https://eboardresults.com",
-            "Referer": "https://eboardresults.com/v2/home",
-            "User-Agent": "Mozilla/5.0"
-        }
-
-        res = data["session"].post("https://eboardresults.com/v2/getres", data=payload, headers=headers)
-        result = res.json()
-
-        if result.get("status") != 0:
-            await update.message.reply_text("❌ Captcha ভুল")
-            await send_captcha(update, data)
-            return
-
-        info = result["res"]
-
-        gpa = info.get("res_detail","N/A").replace("GPA=","")
-
-        msg = f"""
-👨‍🎓 STUDENT INFORMATION
-━━━━━━━━━━━━━━━
-👤 Name: {info.get('name')}
-👨 Father: {info.get('fname')}
-👩 Mother: {info.get('mname')}
-
-📘 {data['exam'].upper()} {data['year']}
-🏫 Board: {info.get('board_name')}
-
-⭐ GPA: {gpa}
-"""
-
-        await update.message.reply_text(msg, reply_markup=main_menu())
-
-        users[chat_id] = {}
-
-# ================= CAPTCHA =================
-async def send_captcha(update, data):
-    chat_id = update.effective_chat.id
-
-    url = "https://eboardresults.com/v2/captcha"
-    r = data["session"].get(url)
-
-    with open(f"{chat_id}.jpg","wb") as f:
-        f.write(r.content)
-
-    keyboard = [["🔄 Reload Captcha"]]
-
-    await update.message.reply_photo(
-        photo=open(f"{chat_id}.jpg","rb"),
+        "📩 Start চাপ দিয়ে শুরু করো:",
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
-    await update.message.reply_text("🔐 Captcha লিখুন:")
+# ===== MAIN HANDLE =====
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
 
-# ================= ROUTE =================
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.update_queue.put_nowait(update)
-    return "ok"
+    # 👉 Start button
+    if text == "🚀 Start":
+        await update.message.reply_text(
+            "📥 তোমার Roll নম্বর দাও:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return
 
-@app.route("/")
-def home():
-    return "Bot running..."
+    # 👉 Next button
+    if text.startswith("➡️ Next"):
+        text = text.split("(")[-1].replace(")", "")
 
-# ================= RUN =================
+    wait_msg = await update.message.reply_text(
+        "⏳ একটু অপেক্ষা করো...\nResult আনতেছি..."
+    )
+
+    payload = {
+        "roll": text,
+        "button2": "Submit"
+    }
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://hscresult.bise-ctg.gov.bd/h_x_y_ctg25/individual/index.php"
+    }
+
+    try:
+        res = requests.post(BASE_URL, data=payload, headers=headers)
+        soup = BeautifulSoup(res.text, "html.parser")
+
+        data = {}
+
+        for row in soup.find_all("tr"):
+            cols = row.find_all("td")
+            if len(cols) == 4:
+                data[cols[0].get_text(strip=True)] = cols[1].get_text(strip=True)
+                data[cols[2].get_text(strip=True)] = cols[3].get_text(strip=True)
+
+        name = data.get("Name", "")
+        father = data.get("Father's Name", "")
+        mother = data.get("Mother's Name", "")
+        roll = data.get("Roll No", "")
+        reg = data.get("Reg. NO", "")
+        board = data.get("Board", "")
+        group = data.get("Group", "")
+        result = data.get("Result", "")
+        gpa = data.get("GPA", "")
+        institute = data.get("Institute", "")
+
+        if not name:
+            await wait_msg.delete()
+            await update.message.reply_text("❌ Result পাওয়া যায়নি!")
+            return
+
+        await wait_msg.delete()
+
+        msg = (
+            "🧑‍🎓 STUDENT INFORMATION\n"
+            "━━━━━━━━━━━━━━\n\n"
+
+            f"👤 Name: {name}\n"
+            f"👨 Father: {father}\n"
+            f"👩 Mother: {mother}\n\n"
+
+            "━━━━━━━━━━━━━━\n"
+            "📘 HSC RESULT 2025\n"
+            "━━━━━━━━━━━━━━\n\n"
+
+            f"🆔 Roll No: {roll}\n"
+            f"📄 Registration No: {reg}\n\n"
+
+            f"🏫 Board: {board}\n"
+            f"📚 Group: {group}\n\n"
+
+            f"📊 Result: {result}\n"
+            f"⭐ GPA: {gpa}\n\n"
+
+            f"🏫 Institute: {institute}"
+        )
+
+        await update.message.reply_text(msg)
+
+        # ===== NEXT BUTTON =====
+        next_roll = str(int(roll) + 1)
+
+        keyboard = [[f"➡️ Next ({next_roll})"]]
+
+        await update.message.reply_text(
+            "👉 Next করতে নিচের বাটনে চাপ দাও",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard,
+                resize_keyboard=True,
+                one_time_keyboard=True
+            )
+        )
+
+    except Exception as e:
+        await wait_msg.delete()
+        await update.message.reply_text("❌ Server Error!")
+
+# ===== RUN =====
+def main():
+    keep_alive()
+
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("🤖 Bot Running...")
+    app.run_polling()
+
 if __name__ == "__main__":
-    application.initialize()
-    application.start()
-    app.run(host="0.0.0.0", port=10000)
+    main()
