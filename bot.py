@@ -1,141 +1,115 @@
 import requests
-import os
-from flask import Flask, request
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.getenv("TOKEN")
-URL = f"https://api.telegram.org/bot{TOKEN}"
-
-app = Flask(__name__)
+TOKEN = "YOUR_BOT_TOKEN"
 
 users = {}
 
-# ================= SEND MESSAGE =================
-def send_message(chat_id, text, keyboard=None):
-    data = {
-        "chat_id": chat_id,
-        "text": text
-    }
-    if keyboard:
-        data["reply_markup"] = keyboard
-
-    requests.post(f"{URL}/sendMessage", json=data)
-
-# ================= SEND PHOTO =================
-def send_photo(chat_id, photo_bytes, keyboard=None):
-    files = {"photo": photo_bytes}
-    data = {"chat_id": chat_id}
-
-    if keyboard:
-        data["reply_markup"] = str(keyboard)
-
-    requests.post(f"{URL}/sendPhoto", data=data, files=files)
-
 # ================= MAIN MENU =================
 def main_menu():
-    return {
-        "keyboard": [
-            ["🚀 রেজাল্ট বের করুন 🚀"],
-            ["⁉️ Help", "⭐ Rate"]
-        ],
-        "resize_keyboard": True
-    }
+    return ReplyKeyboardMarkup([
+        ["🚀 রেজাল্ট বের করুন 🚀"],
+        ["⁉️ Help & Info.", "⭐ Rate us"],
+        ["📊 Statistics", "🔮 Developer Info."]
+    ], resize_keyboard=True)
 
-# ================= CAPTCHA =================
-def send_captcha(chat_id, data):
-    url = "https://eboardresults.com/v2/captcha"
-    r = data["session"].get(url)
-
-    keyboard = {
-        "keyboard": [["🔄 Reload Captcha"]],
-        "resize_keyboard": True
-    }
-
-    requests.post(
-        f"{URL}/sendPhoto",
-        data={"chat_id": chat_id, "reply_markup": str(keyboard)},
-        files={"photo": r.content}
+# ================= START =================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users[update.effective_chat.id] = {}
+    await update.message.reply_text(
+        "🎉 Welcome!\n\nResult দেখতে নিচের বাটনে চাপ দিন 👇",
+        reply_markup=main_menu()
     )
 
-    send_message(chat_id, "🔐 Captcha লিখুন:")
-
-# ================= WEBHOOK =================
-@app.route(f"/{TOKEN}", methods=["POST"])
-def webhook():
-    update = request.get_json()
-
-    if "message" not in update:
-        return "ok"
-
-    msg = update["message"]
-    chat_id = msg["chat"]["id"]
-    text = msg.get("text", "")
+# ================= HANDLE =================
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    text = update.message.text
 
     if chat_id not in users:
         users[chat_id] = {}
 
     data = users[chat_id]
 
-    # ================= START =================
-    if text == "/start":
-        users[chat_id] = {}
-        send_message(chat_id, "🎉 Welcome!\nResult দেখতে বাটনে চাপ দিন 👇", main_menu())
-        return "ok"
-
-    # ================= MAIN =================
+    # ================= MAIN BUTTON =================
     if text == "🚀 রেজাল্ট বের করুন 🚀":
         users[chat_id] = {}
-        keyboard = {
-            "keyboard": [["SSC", "HSC"]],
-            "resize_keyboard": True
-        }
-        send_message(chat_id, "📘 Exam নির্বাচন করুন:", keyboard)
-        return "ok"
+        keyboard = [
+            ["JSC/JDC", "SSC/Dakhil"],
+            ["HSC/Alim", "DIBS"]
+        ]
+        await update.message.reply_text(
+            "📘 Exam নির্বাচন করুন:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
 
     # ================= EXAM =================
     if "exam" not in data:
-        data["exam"] = text.lower()
-        keyboard = {
-            "keyboard": [["2025", "2024"], ["2023", "2022"]],
-            "resize_keyboard": True
-        }
-        send_message(chat_id, "📅 Year নির্বাচন করুন:", keyboard)
-        return "ok"
+        data["exam"] = text.split("/")[0].lower()
+
+        keyboard = [
+            ["2025","2024","2023"],
+            ["2022","2021","2020"],
+            ["2019","2018","2017"],
+            ["➡️ Next Page"]
+        ]
+
+        await update.message.reply_text(
+            "📅 Year নির্বাচন করুন:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
 
     # ================= YEAR =================
     if "year" not in data:
+        if "Next" in text:
+            await update.message.reply_text("👉 Older year add করতে পারো চাইলে")
+            return
+
         data["year"] = text
-        keyboard = {
-            "keyboard": [["Dhaka", "Chattogram"], ["Rajshahi", "Cumilla"]],
-            "resize_keyboard": True
-        }
-        send_message(chat_id, "🏫 Board নির্বাচন করুন:", keyboard)
-        return "ok"
+
+        keyboard = [
+            ["Dhaka","Rajshahi","Cumilla"],
+            ["Chattogram","Sylhet","Barishal"],
+            ["Dinajpur","Jashore","Mymensingh"],
+            ["Madrasha","Technical"]
+        ]
+
+        await update.message.reply_text(
+            "🏫 Board নির্বাচন করুন:",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
+        return
 
     # ================= BOARD =================
     if "board" not in data:
         data["board"] = text.lower()
-        send_message(chat_id, "🆔 Roll লিখুন:")
-        return "ok"
+        await update.message.reply_text("🆔 Roll লিখুন:")
+        return
 
     # ================= ROLL =================
     if "roll" not in data:
         data["roll"] = text
-        send_message(chat_id, "📄 Registration লিখুন:")
-        return "ok"
+        await update.message.reply_text("📄 Registration লিখুন:")
+        return
 
     # ================= REG =================
     if "reg" not in data:
         data["reg"] = text
-        data["session"] = requests.Session()
-        send_captcha(chat_id, data)
-        return "ok"
 
-    # ================= RELOAD CAPTCHA =================
-    if text == "🔄 Reload Captcha":
-        send_captcha(chat_id, data)
-        return "ok"
+        session = requests.Session()
+        data["session"] = session
+
+        await send_captcha(update, data)
+        return
 
     # ================= CAPTCHA =================
+    if text == "🔄 Reload Captcha":
+        await send_captcha(update, data)
+        return
+
     if "captcha" not in data:
         data["captcha"] = text
 
@@ -150,10 +124,11 @@ def webhook():
         }
 
         headers = {
-            "User-Agent": "Mozilla/5.0",
+            "Content-Type": "application/x-www-form-urlencoded",
             "X-Requested-With": "XMLHttpRequest",
             "Origin": "https://eboardresults.com",
-            "Referer": "https://eboardresults.com/v2/home"
+            "Referer": "https://eboardresults.com/v2/home",
+            "User-Agent": "Mozilla/5.0"
         }
 
         res = data["session"].post(
@@ -165,25 +140,35 @@ def webhook():
         result = res.json()
 
         if result.get("status") != 0:
-            send_message(chat_id, "❌ Captcha ভুল")
-            send_captcha(chat_id, data)
-            return "ok"
+            await update.message.reply_text("❌ Captcha ভুল, আবার চেষ্টা করো")
+            await send_captcha(update, data)
+            return
 
         info = result["res"]
 
-        gpa = info.get("res_detail", "").replace("GPA=", "")
+        gpa = info.get("res_detail","N/A").replace("GPA=","")
+
+        # ✅ FINAL SMART GENDER FIX
+        sex = str(info.get("sex")).strip().lower()
+
+        if sex in ["1", "f", "female"]:
+            gender = "FEMALE"
+        elif sex in ["2", "0", "m", "male"]:
+            gender = "MALE"
+        else:
+            gender = "UNKNOWN"
 
         msg = f"""
-👨‍🎓 STUDENT INFO
-━━━━━━━━━━━━━━
-
+👨‍🎓 STUDENT INFORMATION
+━━━━━━━━━━━━━━━
 👤 Name: {info.get('name')}
 👨 Father: {info.get('fname')}
 👩 Mother: {info.get('mname')}
+📅 DOB: {info.get('dob')}
+🚻 Gender: {gender}
 
 📘 {data['exam'].upper()} RESULT {data['year']}
-━━━━━━━━━━━━━━
-
+━━━━━━━━━━━━━━━
 🆔 Roll: {data['roll']}
 📄 Reg: {data['reg']}
 
@@ -196,17 +181,34 @@ def webhook():
 🏫 Institute: {info.get('inst_name')}
 """
 
-        send_message(chat_id, msg, main_menu())
+        await update.message.reply_text(msg, reply_markup=main_menu())
 
         users[chat_id] = {}
 
-    return "ok"
+# ================= CAPTCHA FUNCTION =================
+async def send_captcha(update, data):
+    chat_id = update.effective_chat.id
 
-# ================= ROOT =================
-@app.route("/")
-def home():
-    return "Bot Running ✅"
+    url = "https://eboardresults.com/v2/captcha"
+    r = data["session"].get(url)
+
+    with open(f"{chat_id}.jpg","wb") as f:
+        f.write(r.content)
+
+    keyboard = [["🔄 Reload Captcha"]]
+
+    await update.message.reply_photo(
+        photo=open(f"{chat_id}.jpg","rb"),
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
+
+    await update.message.reply_text("🔐 Captcha লিখুন:")
 
 # ================= RUN =================
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
+
+print("Bot Running...")
+app.run_polling()
