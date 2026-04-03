@@ -1,8 +1,11 @@
-import requests
+import os
+import aiohttp
+from io import BytesIO
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "8514395514:AAF5D0xVYcfgWlwaXRj-PC5Ad_Z73Fpj3p0"
+# ================= CONFIG =================
+TOKEN = os.getenv("BOT_TOKEN")  # 👉 এখানে env token use করবে
 
 users = {}
 
@@ -32,8 +35,8 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = users[chat_id]
 
-    # ================= MAIN BUTTON =================
-    if text == "🚀 রেজাল্ট বের করুন 🚀":
+    # ================= MAIN =================
+    if "রেজাল্ট" in text:
         users[chat_id] = {}
         keyboard = [
             ["JSC/JDC", "SSC/Dakhil"],
@@ -65,7 +68,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ================= YEAR =================
     if "year" not in data:
         if "Next" in text:
-            await update.message.reply_text("👉 Older year add করতে পারো চাইলে")
+            await update.message.reply_text("👉 Older year পরে add হবে")
             return
 
         data["year"] = text
@@ -98,10 +101,7 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ================= REG =================
     if "reg" not in data:
         data["reg"] = text
-
-        session = requests.Session()
-        data["session"] = session
-
+        data["session"] = aiohttp.ClientSession()
         await send_captcha(update, data)
         return
 
@@ -131,13 +131,16 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "User-Agent": "Mozilla/5.0"
         }
 
-        res = data["session"].post(
-            "https://eboardresults.com/v2/getres",
-            data=payload,
-            headers=headers
-        )
-
-        result = res.json()
+        try:
+            async with data["session"].post(
+                "https://eboardresults.com/v2/getres",
+                data=payload,
+                headers=headers
+            ) as res:
+                result = await res.json()
+        except:
+            await update.message.reply_text("⚠️ Server error, পরে আবার চেষ্টা করো")
+            return
 
         if result.get("status") != 0:
             await update.message.reply_text("❌ Captcha ভুল, আবার চেষ্টা করো")
@@ -145,18 +148,10 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         info = result["res"]
+        gpa = info.get("res_detail", "N/A").replace("GPA=", "")
 
-        gpa = info.get("res_detail","N/A").replace("GPA=","")
-
-        # ✅ FINAL SMART GENDER FIX
         sex = str(info.get("sex")).strip().lower()
-
-        if sex in ["1", "f", "female"]:
-            gender = "FEMALE"
-        elif sex in ["2", "0", "m", "male"]:
-            gender = "MALE"
-        else:
-            gender = "UNKNOWN"
+        gender = "FEMALE" if sex in ["1","f","female"] else "MALE"
 
         msg = f"""
 👨‍🎓 STUDENT INFORMATION
@@ -183,22 +178,23 @@ async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(msg, reply_markup=main_menu())
 
+        await data["session"].close()
         users[chat_id] = {}
 
-# ================= CAPTCHA FUNCTION =================
+# ================= CAPTCHA =================
 async def send_captcha(update, data):
-    chat_id = update.effective_chat.id
-
     url = "https://eboardresults.com/v2/captcha"
-    r = data["session"].get(url)
 
-    with open(f"{chat_id}.jpg","wb") as f:
-        f.write(r.content)
+    async with data["session"].get(url) as r:
+        img = await r.read()
+
+    image = BytesIO(img)
+    image.name = "captcha.jpg"
 
     keyboard = [["🔄 Reload Captcha"]]
 
     await update.message.reply_photo(
-        photo=open(f"{chat_id}.jpg","rb"),
+        photo=image,
         reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     )
 
@@ -210,5 +206,5 @@ app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-print("Bot Running...")
+print("✅ Bot Running...")
 app.run_polling()
