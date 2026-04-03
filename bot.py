@@ -4,7 +4,7 @@ from bs4 import BeautifulSoup
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "8704841795:AAEXokGxG2gtGDcLzKIySygwPD61RdQHWqg"
 
 user_data = {}
 
