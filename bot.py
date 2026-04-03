@@ -1,155 +1,203 @@
 import requests
+import re
 from bs4 import BeautifulSoup
-import threading
-import os
-
-from flask import Flask
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-# ===== TOKEN (Render ENV থেকে নিবে) =====
-TOKEN = os.getenv("TOKEN")
+TOKEN = "YOUR_BOT_TOKEN_HERE"
 
-BASE_URL = "https://hscresult.bise-ctg.gov.bd/h_x_y_ctg25/individual/result_mark_details.php"
+user_data = {}
 
-# ===== FLASK KEEP ALIVE =====
-app_flask = Flask(__name__)
+# ---------- CAPTCHA FETCH ----------
+headers = {
+    "User-Agent": "Mozilla/5.0",
+    "Referer": "http://www.educationboardresults.gov.bd/index.php"
+}
 
-@app_flask.route('/')
-def home():
-    return "Bot is running!"
+def get_captcha(session):
+    url = "http://www.educationboardresults.gov.bd/index.php"
+    res = session.get(url, headers=headers)
 
-def run_flask():
-    app_flask.run(host="0.0.0.0", port=8080)
+    match = re.search(r'(\d+\s*\+\s*\d+)', res.text)
+    if match:
+        return match.group(1)
 
-def keep_alive():
-    t = threading.Thread(target=run_flask)
-    t.start()
+    return None
 
-# ===== START =====
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["🚀 Start"]]
+def fetch_captcha(session):
+    for _ in range(5):
+        cap = get_captcha(session)
+        if cap:
+            return cap
+    return None
 
-    await update.message.reply_text(
-        "📩 Start চাপ দিয়ে শুরু করো:",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+# ---------- RESULT CHECK ----------
+def check_result(data):
+    session = requests.Session()
 
-# ===== MAIN HANDLE =====
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
+    captcha = fetch_captcha(session)
+    if not captcha:
+        return None
 
-    # 👉 Start button
-    if text == "🚀 Start":
-        await update.message.reply_text(
-            "📥 তোমার Roll নম্বর দাও:",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        return
-
-    # 👉 Next button
-    if text.startswith("➡️ Next"):
-        text = text.split("(")[-1].replace(")", "")
-
-    wait_msg = await update.message.reply_text(
-        "⏳ একটু অপেক্ষা করো...\nResult আনতেছি..."
-    )
+    answer = str(eval(captcha))
 
     payload = {
-        "roll": text,
+        "sr": "3",
+        "et": "2",
+        "exam": data["exam"],
+        "year": data["year"],
+        "board": data["board"],
+        "roll": data["roll"],
+        "reg": data["reg"],
+        "value_s": answer,
         "button2": "Submit"
     }
 
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Referer": "https://hscresult.bise-ctg.gov.bd/h_x_y_ctg25/individual/index.php"
-    }
+    res = session.post(
+        "http://www.educationboardresults.gov.bd/result.php",
+        data=payload,
+        headers=headers
+    )
 
-    try:
-        res = requests.post(BASE_URL, data=payload, headers=headers)
-        soup = BeautifulSoup(res.text, "html.parser")
+    if "Result" not in res.text:
+        return "retry"
 
-        data = {}
+    return res.text
 
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if len(cols) == 4:
-                data[cols[0].get_text(strip=True)] = cols[1].get_text(strip=True)
-                data[cols[2].get_text(strip=True)] = cols[3].get_text(strip=True)
+def get_final_result(data):
+    for _ in range(5):
+        result = check_result(data)
+        if result and result != "retry":
+            return result
+    return None
 
-        name = data.get("Name", "")
-        father = data.get("Father's Name", "")
-        mother = data.get("Mother's Name", "")
-        roll = data.get("Roll No", "")
-        reg = data.get("Reg. NO", "")
-        board = data.get("Board", "")
-        group = data.get("Group", "")
-        result = data.get("Result", "")
-        gpa = data.get("GPA", "")
-        institute = data.get("Institute", "")
+# ---------- START ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [["🚀 Result Check"]]
+    await update.message.reply_text(
+        "📢 Welcome!\nClick below 👇",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    )
 
-        if not name:
-            await wait_msg.delete()
-            await update.message.reply_text("❌ Result পাওয়া যায়নি!")
+# ---------- HANDLE ----------
+async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    text = update.message.text
+
+    data = user_data.setdefault(chat_id, {})
+
+    if text == "🚀 Result Check":
+        user_data[chat_id] = {}
+
+        keyboard = [
+            ["SSC", "HSC"],
+            ["JSC", "SSC VOC"],
+            ["HSC VOC", "HSC BM"]
+        ]
+
+        await update.message.reply_text("📚 Select Exam:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+
+    elif "exam" not in data:
+        exam_map = {
+            "SSC": "ssc",
+            "HSC": "hsc",
+            "JSC": "jsc",
+            "SSC VOC": "ssc_voc",
+            "HSC VOC": "hsc_voc",
+            "HSC BM": "hsc_bm"
+        }
+        data["exam"] = exam_map.get(text, "ssc")
+
+        keyboard = [["2025","2024","2023"],["2022","2021","2020"],["2019","2018","2017"]]
+        await update.message.reply_text("📅 Select Year:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+
+    elif "year" not in data:
+        data["year"] = text
+
+        keyboard = [
+            ["Dhaka","Chattogram","Rajshahi"],
+            ["Sylhet","Barishal","Cumilla"],
+            ["Dinajpur","Jashore","Mymensingh"],
+            ["Madrasah","Technical"]
+        ]
+        await update.message.reply_text("🏫 Select Board:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+
+    elif "board" not in data:
+        data["board"] = text.lower()
+        await update.message.reply_text("🔢 Enter Roll:")
+
+    elif "roll" not in data:
+        data["roll"] = text
+        await update.message.reply_text("📝 Enter Registration:")
+
+    elif "reg" not in data:
+        data["reg"] = text
+
+        await update.message.reply_text("⏳ Checking Result...")
+
+        html = get_final_result(data)
+
+        if not html:
+            await update.message.reply_text("❌ Failed! Try again later")
+            user_data[chat_id] = {}
             return
 
-        await wait_msg.delete()
+        soup = BeautifulSoup(html, "html.parser")
 
-        msg = (
-            "🧑‍🎓 STUDENT INFORMATION\n"
-            "━━━━━━━━━━━━━━\n\n"
+        def get_val(label):
+            tag = soup.find(string=label)
+            return tag.find_next().text.strip() if tag else "N/A"
 
-            f"👤 Name: {name}\n"
-            f"👨 Father: {father}\n"
-            f"👩 Mother: {mother}\n\n"
+        name = get_val("Name")
+        father = get_val("Father's Name")
+        mother = get_val("Mother's Name")
+        dob = get_val("Date of Birth")
+        group = get_val("Group")
+        result_status = get_val("Result")
+        gpa = get_val("GPA")
+        institute = get_val("Institute")
 
-            "━━━━━━━━━━━━━━\n"
-            "📘 HSC RESULT 2025\n"
-            "━━━━━━━━━━━━━━\n\n"
+        subjects_text = ""
+        for row in soup.find_all("tr"):
+            cols = row.find_all("td")
+            if len(cols) == 3:
+                subjects_text += f"{cols[0].text} → {cols[1].text} → {cols[2].text}\n"
 
-            f"🆔 Roll No: {roll}\n"
-            f"📄 Registration No: {reg}\n\n"
+        result = f"""
+👨‍🎓 STUDENT INFO
+━━━━━━━━━━━━━━━
+👤 Name: {name}
+👨 Father: {father}
+👩 Mother: {mother}
+🎂 DOB: {dob}
 
-            f"🏫 Board: {board}\n"
-            f"📚 Group: {group}\n\n"
+📘 RESULT {data['year']}
+━━━━━━━━━━━━━━━
+🆔 Roll: {data['roll']}
+📄 Reg: {data['reg']}
+🏫 Board: {data['board'].upper()}
 
-            f"📊 Result: {result}\n"
-            f"⭐ GPA: {gpa}\n\n"
+📊 Result: {result_status}
+⭐ GPA: {gpa}
 
-            f"🏫 Institute: {institute}"
-        )
+🏫 {institute}
 
-        await update.message.reply_text(msg)
+📊 SUBJECTS
+━━━━━━━━━━━━━━━
+{subjects_text}
+"""
 
-        # ===== NEXT BUTTON =====
-        next_roll = str(int(roll) + 1)
+        await update.message.reply_text(result)
 
-        keyboard = [[f"➡️ Next ({next_roll})"]]
+        user_data[chat_id] = {}
 
-        await update.message.reply_text(
-            "👉 Next করতে নিচের বাটনে চাপ দাও",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard,
-                resize_keyboard=True,
-                one_time_keyboard=True
-            )
-        )
-
-    except Exception as e:
-        await wait_msg.delete()
-        await update.message.reply_text("❌ Server Error!")
-
-# ===== RUN =====
-def main():
-    keep_alive()
-
+# ---------- RUN ----------
+if __name__ == "__main__":
     app = ApplicationBuilder().token(TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
 
-    print("🤖 Bot Running...")
+    print("🚀 RESULT BD BOT STARTED SUCCESSFULLY ✅")
+
     app.run_polling()
-
-if __name__ == "__main__":
-    main()
