@@ -1,203 +1,232 @@
+from flask import Flask
+from threading import Thread
+
+# ================= KEEP ALIVE =================
+app_web = Flask('')
+
+@app_web.route('/')
+def home():
+    return "Bot is running!"
+
+def run():
+    app_web.run(host='0.0.0.0', port=10000)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# ================= ORIGINAL CODE =================
 import requests
-import re
+import time
+import csv
+import os
 from bs4 import BeautifulSoup
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 
-TOKEN = "8704841795:AAEXokGxG2gtGDcLzKIySygwPD61RdQHWqg"
+TOKEN = "8542307257:AAF2Ni_0sVZ06jPqybogZpbFP_QOfMfMVis"
+FILE_NAME = "data.csv"
 
-user_data = {}
+last_range = {}
 
-# ---------- CAPTCHA FETCH ----------
-headers = {
-    "User-Agent": "Mozilla/5.0",
-    "Referer": "http://www.educationboardresults.gov.bd/index.php"
-}
+def init_file():
+    if not os.path.exists(FILE_NAME):
+        with open(FILE_NAME, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerow(["Name","Roll","Board","Mobile","Date","TranID"])
 
-def get_captcha(session):
-    url = "http://www.educationboardresults.gov.bd/index.php"
-    res = session.get(url, headers=headers)
+def is_duplicate(tran_id):
+    if not os.path.exists(FILE_NAME):
+        return False
+    with open(FILE_NAME, "r", encoding="utf-8") as f:
+        return any(tran_id in row for row in f)
 
-    match = re.search(r'(\d+\s*\+\s*\d+)', res.text)
-    if match:
-        return match.group(1)
+def save_data(name, roll, board, mobile, date, tran_id):
+    if is_duplicate(tran_id):
+        return
+    with open(FILE_NAME, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([name, roll, board, mobile, date, tran_id])
 
+def get_tran_ids(roll):
+    url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Search?searchStr={roll}"
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    ids = []
+    try:
+        rows = soup.find("table").find_all("tr")[1:]
+        for r in rows:
+            ids.append(r.find_all("td")[1].text.strip())
+    except:
+        pass
+
+    return ids
+
+def get_full_data(tran_id):
+    url = f"https://billpay.sonalibank.com.bd/BoardRescrutiny/Home/Voucher/{tran_id}"
+    res = requests.get(url)
+    soup = BeautifulSoup(res.text, "html.parser")
+
+    try:
+        lines = [l.strip() for l in soup.get_text("\n").split("\n") if l.strip()]
+
+        def find(label):
+            for i in range(len(lines)):
+                if label in lines[i]:
+                    return lines[i+1]
+            return "Not found"
+
+        name = find("Name")
+        roll = find("Roll")
+        board = find("Board")
+        mobile = find("Mobile")
+        date = find("Date")
+
+        save_data(name, roll, board, mobile, date, tran_id)
+
+        text = f"""<pre>
+Name   : {name}
+Roll   : {roll}
+Board  : {board}
+Mobile : {mobile}
+Date   : {date}
+ID     : {tran_id}
+</pre>"""
+
+        return text, mobile
+    except:
+        return None, None
+
+def format_number_bd(mobile):
+    n = mobile.replace("+","").replace(" ","")
+    if n.startswith("01"):
+        return "880"+n[1:]
+    if n.startswith("880"):
+        return n
     return None
 
-def fetch_captcha(session):
-    for _ in range(5):
-        cap = get_captcha(session)
-        if cap:
-            return cap
-    return None
-
-# ---------- RESULT CHECK ----------
-def check_result(data):
-    session = requests.Session()
-
-    captcha = fetch_captcha(session)
-    if not captcha:
+def get_contact_buttons(mobile):
+    n = format_number_bd(mobile)
+    if not n:
         return None
 
-    answer = str(eval(captcha))
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📱 WhatsApp", url=f"https://wa.me/{n}"),
+        InlineKeyboardButton("✈️ Telegram", url=f"https://t.me/+{n}")
+    ]])
 
-    payload = {
-        "sr": "3",
-        "et": "2",
-        "exam": data["exam"],
-        "year": data["year"],
-        "board": data["board"],
-        "roll": data["roll"],
-        "reg": data["reg"],
-        "value_s": answer,
-        "button2": "Submit"
-    }
+def next_button():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("➡️ Next 50", callback_data="next50")]
+    ])
 
-    res = session.post(
-        "http://www.educationboardresults.gov.bd/result.php",
-        data=payload,
-        headers=headers
+def get_keyboard():
+    return ReplyKeyboardMarkup(
+        [["🚀 Start"],["📂 Search Database"],["📥 Download Data"]],
+        resize_keyboard=True
     )
 
-    if "Result" not in res.text:
-        return "retry"
-
-    return res.text
-
-def get_final_result(data):
-    for _ in range(5):
-        result = check_result(data)
-        if result and result != "retry":
-            return result
-    return None
-
-# ---------- START ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [["🚀 Result Check"]]
-    await update.message.reply_text(
-        "📢 Welcome!\nClick below 👇",
-        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    )
+    await update.message.reply_text("👋 Welcome!", reply_markup=get_keyboard())
 
-# ---------- HANDLE ----------
+async def run_range(message, context, start, end):
+    status = await message.reply_text("⏳ Processing...")
+    count = 0
+
+    for roll in range(start, end+1):
+        await status.edit_text(f"⏳ Processing...\n🔢 Roll: {roll}\n📊 Found: {count}")
+
+        for tid in get_tran_ids(roll):
+            data, mobile = get_full_data(tid)
+
+            if data:
+                count += 1
+                await message.reply_text(
+                    f"📄 Result {count}:\n{data}",
+                    parse_mode="HTML",
+                    reply_markup=get_contact_buttons(mobile)
+                )
+
+        time.sleep(2)
+
+    await status.edit_text(f"✅ Done!\n📊 Total: {count}")
+    await message.reply_text("👉 Next 50?", reply_markup=next_button())
+
 async def handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.message.chat_id
-    text = update.message.text
+    text = update.message.text.strip()
+    user_id = update.message.from_user.id
 
-    data = user_data.setdefault(chat_id, {})
+    if text == "🚀 Start":
+        await update.message.reply_text("✅ Ready!", reply_markup=get_keyboard())
+        return
 
-    if text == "🚀 Result Check":
-        user_data[chat_id] = {}
+    if text == "📂 Search Database":
+        await update.message.reply_text("👉 Roll বা Range দাও (max 50)")
+        return
 
-        keyboard = [
-            ["SSC", "HSC"],
-            ["JSC", "SSC VOC"],
-            ["HSC VOC", "HSC BM"]
-        ]
+    if text == "📥 Download Data":
+        if os.path.exists(FILE_NAME):
+            await update.message.reply_document(open(FILE_NAME,"rb"))
+        else:
+            await update.message.reply_text("❌ No data")
+        return
 
-        await update.message.reply_text("📚 Select Exam:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    if text.isdigit():
+        await update.message.reply_text("⏳ Searching...")
+        for i, tid in enumerate(get_tran_ids(int(text)),1):
+            data, mobile = get_full_data(tid)
+            if data:
+                await update.message.reply_text(
+                    f"📄 Result {i}:\n{data}",
+                    parse_mode="HTML",
+                    reply_markup=get_contact_buttons(mobile)
+                )
+        return
 
-    elif "exam" not in data:
-        exam_map = {
-            "SSC": "ssc",
-            "HSC": "hsc",
-            "JSC": "jsc",
-            "SSC VOC": "ssc_voc",
-            "HSC VOC": "hsc_voc",
-            "HSC BM": "hsc_bm"
-        }
-        data["exam"] = exam_map.get(text, "ssc")
-
-        keyboard = [["2025","2024","2023"],["2022","2021","2020"],["2019","2018","2017"]]
-        await update.message.reply_text("📅 Select Year:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-
-    elif "year" not in data:
-        data["year"] = text
-
-        keyboard = [
-            ["Dhaka","Chattogram","Rajshahi"],
-            ["Sylhet","Barishal","Cumilla"],
-            ["Dinajpur","Jashore","Mymensingh"],
-            ["Madrasah","Technical"]
-        ]
-        await update.message.reply_text("🏫 Select Board:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-
-    elif "board" not in data:
-        data["board"] = text.lower()
-        await update.message.reply_text("🔢 Enter Roll:")
-
-    elif "roll" not in data:
-        data["roll"] = text
-        await update.message.reply_text("📝 Enter Registration:")
-
-    elif "reg" not in data:
-        data["reg"] = text
-
-        await update.message.reply_text("⏳ Checking Result...")
-
-        html = get_final_result(data)
-
-        if not html:
-            await update.message.reply_text("❌ Failed! Try again later")
-            user_data[chat_id] = {}
+    if "-" in text:
+        try:
+            start_r, end_r = map(int, text.split("-"))
+        except:
+            await update.message.reply_text("❌ Wrong format")
             return
 
-        soup = BeautifulSoup(html, "html.parser")
+        if (end_r-start_r+1) > 50:
+            await update.message.reply_text("❌ Max 50")
+            return
 
-        def get_val(label):
-            tag = soup.find(string=label)
-            return tag.find_next().text.strip() if tag else "N/A"
+        last_range[user_id] = (start_r, end_r)
+        await run_range(update.message, context, start_r, end_r)
+        return
 
-        name = get_val("Name")
-        father = get_val("Father's Name")
-        mother = get_val("Mother's Name")
-        dob = get_val("Date of Birth")
-        group = get_val("Group")
-        result_status = get_val("Result")
-        gpa = get_val("GPA")
-        institute = get_val("Institute")
+    await update.message.reply_text("❌ Invalid input")
 
-        subjects_text = ""
-        for row in soup.find_all("tr"):
-            cols = row.find_all("td")
-            if len(cols) == 3:
-                subjects_text += f"{cols[0].text} → {cols[1].text} → {cols[2].text}\n"
+async def handle_next(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-        result = f"""
-👨‍🎓 STUDENT INFO
-━━━━━━━━━━━━━━━
-👤 Name: {name}
-👨 Father: {father}
-👩 Mother: {mother}
-🎂 DOB: {dob}
+    user_id = query.from_user.id
 
-📘 RESULT {data['year']}
-━━━━━━━━━━━━━━━
-🆔 Roll: {data['roll']}
-📄 Reg: {data['reg']}
-🏫 Board: {data['board'].upper()}
+    if user_id not in last_range:
+        await query.message.reply_text("❌ আগে search করো")
+        return
 
-📊 Result: {result_status}
-⭐ GPA: {gpa}
+    start_r, end_r = last_range[user_id]
+    new_start = end_r + 1
+    new_end = end_r + 50
 
-🏫 {institute}
+    last_range[user_id] = (new_start, new_end)
 
-📊 SUBJECTS
-━━━━━━━━━━━━━━━
-{subjects_text}
-"""
+    await query.message.reply_text(f"🔄 Auto: {new_start}-{new_end}")
+    await run_range(query.message, context, new_start, new_end)
 
-        await update.message.reply_text(result)
+# ================= RUN =================
+init_file()
+keep_alive()  # 🔥 THIS IS THE MAGIC
 
-        user_data[chat_id] = {}
+app = ApplicationBuilder().token(TOKEN).build()
 
-# ---------- RUN ----------
-if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.TEXT, handle))
+app.add_handler(CallbackQueryHandler(handle_next))
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle))
-
-    print("🚀 RESULT BD BOT STARTED SUCCESSFULLY ✅")
-
-    app.run_polling()
+print("🤖 BOT RUNNING 24/7...")
+app.run_polling()
